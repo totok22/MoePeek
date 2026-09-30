@@ -15,6 +15,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: google-proxy-preview
   cancel-in-progress: true
@@ -49,6 +53,7 @@ jobs:
           MOEPEEK_CODE_SIGN_STYLE = Manual
           MOEPEEK_CODE_SIGN_IDENTITY = -
           MOEPEEK_DEVELOPMENT_TEAM =
+          SPARKLE_ED_PUBLIC_KEY = mtrdCtfHXDXLN/VhxGH+qwbj39c7sd3Yv+WS/UDwdf8=
           EOF
 
       - name: Resolve dependencies and generate the project
@@ -59,6 +64,23 @@ jobs:
 
       - name: Run all tests
         run: |
+          set -euo pipefail
+          # A headless runner must not enter onboarding, permissions, or updater UI.
+          # Compile all application logic and tests with a minimal AppKit test host;
+          # restore the real application entry point before archiving the preview.
+          cp Sources/App/MoePeekApp.swift build/MoePeekApp.original.swift
+          trap 'cp build/MoePeekApp.original.swift Sources/App/MoePeekApp.swift' EXIT
+          cat > Sources/App/MoePeekApp.swift <<'EOF'
+          import AppKit
+
+          @main
+          struct MoePeekTestHost {
+              @MainActor
+              static func main() {
+                  _ = NSApplicationMain(CommandLine.argc, CommandLine.unsafeArgv)
+              }
+          }
+          EOF
           xcodebuild test \
             -workspace MoePeek.xcworkspace \
             -scheme MoePeek \
@@ -71,8 +93,23 @@ jobs:
             DEVELOPMENT_TEAM= \
             | tee build/test.log
 
+      - name: Verify recorded test results
+        run: |
+          xcrun xcresulttool get test-results summary --path build/Tests.xcresult > build/test-summary.json
+          xcrun xcresulttool get test-results tests --path build/Tests.xcresult > build/test-tree.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          summary = json.loads(Path('build/test-summary.json').read_text())
+          print(json.dumps(summary, indent=2))
+          assert summary['passedTests'] > 0, 'No tests executed'
+          assert summary['failedTests'] == 0, 'Tests failed'
+          assert 'GoogleTranslateProxyTests' in Path('build/test-tree.json').read_text(), 'Proxy tests not discovered'
+          PY
+
       - name: Archive the test app
         run: |
+          git diff --exit-code -- Sources
           xcodebuild archive \
             -workspace MoePeek.xcworkspace \
             -scheme MoePeek \
@@ -116,6 +153,7 @@ jobs:
           name: validation-results
           path: |
             build/*.log
+            build/test-*.json
             build/*.xcresult
             build/source-commit.txt
           if-no-files-found: warn
