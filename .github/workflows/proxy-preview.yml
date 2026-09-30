@@ -77,7 +77,7 @@ jobs:
           struct MoePeekTestHost {
               @MainActor
               static func main() {
-                  _ = NSApplicationMain(CommandLine.argc, CommandLine.unsafeArgv)
+                  NSApplication.shared.run()
               }
           }
           EOF
